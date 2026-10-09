@@ -1,0 +1,93 @@
+# dtmb-sdr: vendor-neutral CI8 stream to MPEG-TS DTMB receiver.
+#
+# Variant handling: the .ci_support files build linux-64 three ways —
+# linux64 (CPU), linux64_cuda129 (CUDA 12.9) and linux64_cuda130 (CUDA 13.0).
+# Other platforms define no cuda_compiler_version and get the CPU build.
+# The CUDA backend is dlopened at runtime; cuda-cudart supplies the
+# libcudart major matching the compiled plugin (libdtmb_cuda12/13).
+context:
+  name: dtmb-sdr
+  # First release carrying CUDA 12/13 backend support; bump sha256 below
+  # when it is published (0.4.2 sdists cannot build the cu130 variant).
+  version: "0.4.3"
+  # Variant label for the build string: cuda129/cuda130 on CUDA builds, cpu otherwise.
+  variant_label: ${{ "cuda" ~ (cuda_compiler_version | replace(".", "")) if cuda_compiler_version is defined and cuda_compiler_version != "None" else "cpu" }}
+
+package:
+  name: ${{ name }}
+  version: ${{ version }}
+
+source:
+  url: https://pypi.org/packages/source/d/dtmb-sdr/dtmb_sdr-${{ version }}.tar.gz
+  # TODO: replace with the real sdist sha256 when ${version} is published.
+  sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+build:
+  number: 0
+  string: ${{ variant_label }}_h${{ hash }}_${{ build_number }}
+  script:
+    # conda-forge's CUDA toolkit lives under $BUILD_PREFIX (targets/<triplet>);
+    # CUDAToolkit_ROOT makes find_package(CUDAToolkit) find headers there.
+    - if: cuda_compiler_version is defined and cuda_compiler_version != "None"
+      then: python -m pip install . -vv --no-deps --no-build-isolation "--config-settings=cmake.define.DTMB_CORE_ENABLE_CUDA_LDPC=ON" "--config-settings=cmake.define.CUDAToolkit_ROOT=$BUILD_PREFIX"
+      else: python -m pip install . -vv --no-deps --no-build-isolation
+
+requirements:
+  build:
+    - ${{ compiler('c') }}
+    - ${{ compiler('cxx') }}
+    - ${{ stdlib('c') }}
+    - if: cuda_compiler_version is defined and cuda_compiler_version != "None"
+      then: ${{ compiler('cuda') }}
+    - cmake
+    - ninja
+  host:
+    - python
+    - pip
+    - scikit-build-core >=0.10
+    - if: cuda_compiler_version is defined and cuda_compiler_version != "None"
+      then:
+        - cuda-version ==${{ cuda_compiler_version }}
+        - cuda-cudart-dev
+  # cuda-version/cuda-cudart-dev run exports would pin runtime libs to the
+  # build-time versions; the dlopened backend only needs the same major.
+  ignore_run_exports:
+    by_name:
+      - cuda-version
+    from_package:
+      - cuda-cudart-dev
+  run:
+    - python
+    - if: cuda_compiler_version is defined and cuda_compiler_version != "None"
+      then:
+        - cuda-cudart
+        - ${{ pin_compatible("cuda-version", lower_bound="x", upper_bound="x") }}
+
+tests:
+  - python:
+      imports:
+        - dtmb
+      pip_check: true
+  - script:
+      - dtmb-decode --help
+      - dtmb-ts-analyze --help
+  # CUDA variants install a versioned backend plugin; assert it exists.
+  - if: cuda_compiler_version is defined and cuda_compiler_version != "None"
+    then:
+      script:
+        - python -c "import pathlib, dtmb; assert list((pathlib.Path(dtmb.__file__).parent / 'bin').glob('*dtmb_cuda*')), 'CUDA backend library missing from package'"
+
+about:
+  homepage: https://github.com/ningzichun/dtmb-sdr
+  repository: https://github.com/ningzichun/dtmb-sdr
+  summary: Vendor-neutral CI8 stream to MPEG-TS DTMB receiver
+  description: |
+    dtmb-decode converts raw CI8 I/Q captures or streams into MPEG-TS using
+    the portable native receiver core, with an optional CUDA-accelerated LDPC
+    backend. dtmb-ts-analyze inspects the recovered transport stream.
+  license: MIT
+  license_file: LICENSE
+
+extra:
+  recipe-maintainers:
+    - ningzichun
